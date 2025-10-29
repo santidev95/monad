@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <unordered_set>
 #include <vector>
 
 MONAD_NAMESPACE_BEGIN
@@ -53,6 +54,8 @@ class State
 
     Map<Address, VersionStack<AccountState>> current_{};
 
+    VersionStack<std::unordered_set<Address>> modified_in_version_{std::unordered_set<Address>{}, 0};
+
     VersionStack<std::vector<Receipt::Log>> logs_{{}};
 
     Map<bytes32_t, vm::SharedVarcode> code_{};
@@ -70,6 +73,8 @@ private:
     AccountState &current_account_state(Address const &);
 
     std::optional<Account> &current_account(Address const &);
+
+    void mark_as_modified(Address const &);
 
 public:
     State(BlockState &, Incarnation, bool relaxed_validation = false);

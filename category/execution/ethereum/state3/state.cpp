@@ -91,6 +91,12 @@ std::optional<Account> &State::current_account(Address const &address)
     return current_account_state(address).account_;
 }
 
+void State::mark_as_modified(Address const &address)
+{
+    auto &modified = modified_in_version_.current(version_);
+    modified.insert(address);
+}
+
 State::State(
     BlockState &block_state, Incarnation const incarnation,
     bool const relaxed_validation)
@@ -123,17 +129,24 @@ State::Map<bytes32_t, vm::SharedVarcode> const &State::code() const
 void State::push()
 {
     ++version_;
+    auto &modified = modified_in_version_.current(version_);
+    modified.clear();
 }
 
 void State::pop_accept()
 {
     MONAD_ASSERT(version_);
 
-    for (auto &it : current_) {
-        it.second.pop_accept(version_);
+    auto &modified = modified_in_version_.current(version_);
+    for (auto const &address : modified) {
+        auto it = current_.find(address);
+        if (it != current_.end()) {
+            it->second.pop_accept(version_);
+        }
     }
 
     logs_.pop_accept(version_);
+    modified_in_version_.pop_accept(version_);
 
     --version_;
 }
@@ -144,13 +157,18 @@ void State::pop_reject()
 
     std::vector<Address> removals;
 
-    for (auto &it : current_) {
-        if (it.second.pop_reject(version_)) {
-            removals.push_back(it.first);
+    auto &modified = modified_in_version_.current(version_);
+    for (auto const &address : modified) {
+        auto it = current_.find(address);
+        if (it != current_.end()) {
+            if (it->second.pop_reject(version_)) {
+                removals.push_back(it->first);
+            }
         }
     }
 
     logs_.pop_reject(version_);
+    modified_in_version_.pop_reject(version_);
 
     while (removals.size()) {
         current_.erase(removals.back());
@@ -283,6 +301,7 @@ void State::set_nonce(Address const &address, uint64_t const nonce)
         account = Account{.incarnation = incarnation_};
     }
     account.value().nonce = nonce;
+    mark_as_modified(address);
 }
 
 void State::add_to_balance(Address const &address, uint256_t const &delta)
@@ -300,6 +319,7 @@ void State::add_to_balance(Address const &address, uint256_t const &delta)
 
     account.value().balance += delta;
     account_state.touch();
+    mark_as_modified(address);
 }
 
 void State::subtract_from_balance(
@@ -315,6 +335,7 @@ void State::subtract_from_balance(
 
     account.value().balance -= delta;
     account_state.touch();
+    mark_as_modified(address);
 }
 
 void State::set_code_hash(Address const &address, bytes32_t const &hash)
@@ -322,6 +343,7 @@ void State::set_code_hash(Address const &address, bytes32_t const &hash)
     auto &account = current_account(address);
     MONAD_ASSERT(account.has_value());
     account.value().code_hash = hash;
+    mark_as_modified(address);
 }
 
 evmc_storage_status State::set_storage(
@@ -347,6 +369,7 @@ evmc_storage_status State::set_storage(
     {
         auto const result =
             account_state.set_storage(key, value, original_value);
+        mark_as_modified(address);
         return result;
     }
 }
@@ -355,12 +378,14 @@ void State::set_transient_storage(
     Address const &address, bytes32_t const &key, bytes32_t const &value)
 {
     current_account_state(address).set_transient_storage(key, value);
+    mark_as_modified(address);
 }
 
 void State::touch(Address const &address)
 {
     auto &account_state = current_account_state(address);
     account_state.touch();
+    mark_as_modified(address);
 }
 
 evmc_access_status State::access_account(Address const &address)
@@ -396,6 +421,8 @@ bool State::selfdestruct(Address const &address, Address const &beneficiary)
         }
     }
 
+    mark_as_modified(address);
+    mark_as_modified(beneficiary);
     return account_state.destruct();
 }
 
@@ -529,6 +556,7 @@ void State::set_code(Address const &address, byte_string_view const code)
     code_[code_hash] =
         vm().try_insert_varcode(code_hash, vm::make_shared_intercode(code));
     account.value().code_hash = code_hash;
+    mark_as_modified(address);
 }
 
 void State::create_contract(Address const &address)
@@ -544,6 +572,7 @@ void State::create_contract(Address const &address)
     else {
         account = Account{.incarnation = incarnation_};
     }
+    mark_as_modified(address);
 }
 
 /**
@@ -567,6 +596,7 @@ void State::create_account_no_rollback(Address const &address)
             incarnation_.get_block(),
             Incarnation::LAST_TX,
         }};
+    mark_as_modified(address);
 }
 
 std::vector<Receipt::Log> const &State::logs()
@@ -587,6 +617,7 @@ void State::set_to_state_incarnation(Address const &address)
         account = Account{.incarnation = incarnation_};
     }
     account.value().incarnation = incarnation_;
+    mark_as_modified(address);
 }
 
 // RELAXED MERGE
